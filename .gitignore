@@ -1,0 +1,19 @@
+# 凭证与本地运行产物一律不进仓库
+*.info
+workbuddy-desktop.info*
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# 运行日志 / 报告
+*.log
+reports/
+out/
+
+# 编辑器
+.vscode/
+.idea/
+.DS_Store

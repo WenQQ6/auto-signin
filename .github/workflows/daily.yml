@@ -1,0 +1,52 @@
+name: WorkBuddy 每日签到 + 猫猫旅行
+
+# 触发方式
+#   schedule        —— 每天定时自动跑（GitHub 免费额度内的云端 runner）
+#   workflow_dispatch —— 手动补跑一次（用于验收 / 排障）
+on:
+  schedule:
+    # cron 用 UTC。00:10 UTC = 08:10 中国标准时间。
+    # GitHub 的定时任务在高负载时可能延迟数分钟到数十分钟，属正常现象。
+    - cron: "10 0 * * *"
+  workflow_dispatch:
+
+# 同一时间只允许一个实例，避免手动补跑与定时任务撞车导致重复调用写接口
+concurrency:
+  group: workbuddy-daily
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  daily:
+    name: 签到 + 猫猫旅行
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: 拉取脚本
+        uses: actions/checkout@v4
+
+      - name: 动态解析 Python 解释器
+        # 不写死版本号或绝对路径，交给 runner 自己决定 python3 / python 是哪个
+        run: |
+          set -euo pipefail
+          PY="$(command -v python3 || command -v python)"
+          if [ -z "$PY" ]; then
+            echo "runner 上找不到可用的 Python 解释器" >&2
+            exit 1
+          fi
+          echo "使用解释器：$PY"
+          echo "PY=$PY" >> "$GITHUB_ENV"
+
+      - name: 执行每日任务
+        # 凭证全部来自仓库 Secret，脚本不读本机登录态，也不向磁盘写入任何 token
+        env:
+          WB_ACCESS_TOKEN: ${{ secrets.WB_ACCESS_TOKEN }}
+          WB_REFRESH_TOKEN: ${{ secrets.WB_REFRESH_TOKEN }}
+          WB_USER_ID: ${{ secrets.WB_USER_ID }}
+          PUSHPLUS_TOKEN: ${{ secrets.PUSHPLUS_TOKEN }}
+        run: |
+          set -euo pipefail
+          "$PY" scripts/wb_daily.py
