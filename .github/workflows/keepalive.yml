@@ -1,0 +1,58 @@
+name: 仓库保活（防止定时任务被静默停用）
+
+# 为什么需要这个文件
+# ---------------------------------------------------------------------------
+# GitHub 官方文档写的是：「**公开仓库**中，60 天无仓库活动时 scheduled workflow
+# 会被自动停用」。本仓库是 private，按文档不受这条限制。
+#
+# 但社区多次报告该限制在私有仓库上也被触发过，而且失败方式是**静默**的——
+# 定时任务悄悄不再运行，不报错、不通知，你只会发现「签到怎么没做了」。
+#
+# 我们这个任务的特殊性让它更容易中招：脚本只**读**仓库，从不回写任何文件，
+# 所以仓库会长期零活动。加一个每月一次的空提交，彻底堵掉这个风险。
+#
+# 安全设计
+# ---------------------------------------------------------------------------
+# 本 workflow **不读取任何 Secret**，权限只给 contents: write，
+# 与持有全部凭证的 daily.yml 完全隔离（daily.yml 保持 contents: read）。
+# 即使这个文件被篡改，也拿不到任何 WorkBuddy 凭证。
+
+on:
+  schedule:
+    # 每月 1 日 03:23 UTC = 11:23 中国标准时间
+    # 刻意避开整点/0 分，减少和其它任务撞车导致的排队延迟
+    - cron: "23 3 1 * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  keepalive:
+    name: 保活提交
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: 拉取仓库
+        uses: actions/checkout@v4
+
+      - name: 写入保活时间戳并提交
+        run: |
+          set -euo pipefail
+          mkdir -p .keepalive
+          date -u +"%Y-%m-%dT%H:%M:%SZ" > .keepalive/last-ping.txt
+          echo "本次保活时间：$(cat .keepalive/last-ping.txt)"
+
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add .keepalive/last-ping.txt
+
+          if git diff --cached --quiet; then
+            echo "内容无变化，跳过提交"
+            exit 0
+          fi
+
+          git commit -m "chore(keepalive): 仓库保活 $(date -u +%Y-%m)"
+          git push
+          echo "保活提交完成，仓库活动时间已刷新"
