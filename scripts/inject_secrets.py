@@ -173,6 +173,8 @@ def main() -> int:
                     help="飞书自定义机器人 webhook 地址（含 token）")
     ap.add_argument("--feishu-secret", default="",
                     help="飞书签名校验的密钥；机器人没开签名校验就不用给")
+    ap.add_argument("--feishu-keyword", default="",
+                    help="飞书「自定义关键词」安全设置填的关键词；没设置就不用给")
     ap.add_argument("--dry-run", action="store_true", help="只打印将要写入的字段名，不实际写")
     args = ap.parse_args()
 
@@ -192,6 +194,8 @@ def main() -> int:
         secrets["FEISHU_WEBHOOK"] = args.feishu_webhook
     if args.feishu_secret:
         secrets["FEISHU_SECRET"] = args.feishu_secret
+    if args.feishu_keyword:
+        secrets["FEISHU_KEYWORD"] = args.feishu_keyword
     secrets = {k: v for k, v in secrets.items() if v}
 
     print("\n准备写入 %s 的 Secrets：%s" % (args.repo, ", ".join(sorted(secrets))))
