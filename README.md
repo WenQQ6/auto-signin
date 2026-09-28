@@ -142,17 +142,39 @@ on:
     - cron: "10 0 * * *"   # 00:10 UTC = 08:10 中国标准时间
 ```
 
-GitHub 的定时任务在高负载时可能延迟数分钟到数十分钟，属正常现象。
-需要精确时间或多跑几次时，改这一行即可（多个 cron 表达式用列表形式并列）。
+**每天 08:10（中国标准时间）在 GitHub 云端 runner 上自动跑一次，本机不需要开机。**
+
+几点须知：
+
+| 事项 | 说明 |
+|---|---|
+| cron 时区 | GitHub Actions 的 cron **固定走 UTC**。`10 0` = 中国时间 `08:10`。改时间时记得换算（减去 8 小时） |
+| 延迟 | 高负载时可延迟 5～30 分钟，无 SLA。已刻意把分钟设在 `10` 而非 `0`，避开整点拥堵 |
+| 触发分支 | schedule 只在**默认分支**（`main`）上生效 |
+| 额度 | 私有仓库每月 2000 分钟免费额度，单次约 15～20 秒，一天一跑绰绰有余 |
+| 手动补跑 | 仓库 Actions 页 → 选 workflow → **Run workflow** |
+
+### 关于「60 天无活动自动停用」
+
+GitHub 官方文档写的是**公开仓库**才会因 60 天无活动被自动停用定时任务。
+本仓库是 private，按文档不受限制；但社区多次报告该限制在私有仓库上也触发过，
+而且失败是**静默的**（不报错、不通知，只会发现签到没了）。
+
+本任务尤其容易中招：脚本只读仓库、从不回写任何文件，仓库会长期零活动。
+因此加了 `keepalive.yml`，**每月 1 日**自动产生一次空提交，保证仓库始终有活动。
+
+> `keepalive.yml` 不读取任何 Secret，权限只有 `contents: write`；
+> 持有凭证的 `daily.yml` 保持 `contents: read`。两者彻底隔离。
 
 ---
 
 ## 文件
 
 ```
-.github/workflows/daily.yml   定时任务定义（cron + 手动触发）
-scripts/wb_daily.py           云端主脚本：签到 + 猫猫 + 推送
-scripts/inject_secrets.py     本机运行：读登录态 → 注入仓库 Secret
+.github/workflows/daily.yml       定时任务定义（cron + 手动触发）
+.github/workflows/keepalive.yml   每月保活提交，防止定时任务被静默停用
+scripts/wb_daily.py               云端主脚本：签到 + 猫猫 + 推送
+scripts/inject_secrets.py         本机运行：读登录态 → 注入仓库 Secret
 ```
 
 ---
