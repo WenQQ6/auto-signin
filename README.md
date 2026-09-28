@@ -3,7 +3,7 @@
 WorkBuddy「Buddy 加油站」**每日签到 + 猫猫旅行** 自动化。
 
 跑在 GitHub Actions 的免费云端 runner 上，每天定时执行一次，把两件事一起做掉，
-结果通过 PushPlus 推到微信。**不需要任何常开设备。**
+结果通过飞书自定义机器人推送（卡片消息）。**不需要任何常开设备。**
 
 ---
 
@@ -42,20 +42,24 @@ POST /v2/activity/growth/buddy/travel/depart     ② 再派新的一趟
 
 ## 结果怎么告诉你
 
-微信推送（PushPlus，markdown 模板），**签到和猫猫分成两个独立小节**：
+飞书卡片消息，**签到和猫猫分成两个独立小节**，中间用分隔线隔开：
 
 ```markdown
-## 📅 签到
-✅ 签到成功
+WorkBuddy 日报 09-28 · 签到✅          ← 卡片标题栏（成功绿色 / 失败红色）
+
+📅 签到　✅ 签到成功
 - 签到成功，+100 积分
 - 连签 7 天 · 今日 +100 · 累计 700
 - 活动：Buddy加油站 / 高校新生攻略（... ~ ...）
-
-## 🐱 猫猫旅行
-🐱 已派出新的一趟
+──────────────────────────────
+🐱 猫猫旅行　🐱 已派出新的一趟
 - 从「咖啡馆」回家，领取旅行积分 +6
 - 已派猫猫前往「商场店铺」（4 小时后回家）
+──────────────────────────────
+凭证来源：refreshToken 续期成功（HTTP 200）
 ```
+
+卡片发送失败时会自动回退成纯文本再试一次——宁可格式朴素，也不能丢通知。
 
 ### 失败隔离
 
@@ -77,8 +81,10 @@ POST /v2/activity/growth/buddy/travel/depart     ② 再派新的一趟
 # 需要 GitHub CLI（gh auth login），或设置 GH_TOKEN 环境变量
 python scripts/inject_secrets.py --repo WenQQ6/auto-signin
 
-# 想顺手把 PushPlus token 也写进去
-python scripts/inject_secrets.py --repo WenQQ6/auto-signin --pushplus-token <token>
+# 想顺手把飞书 webhook 也写进去
+python scripts/inject_secrets.py --repo WenQQ6/auto-signin \
+    --feishu-webhook https://open.feishu.cn/open-apis/bot/v2/hook/xxxx
+# 机器人开了「签名校验」就再加 --feishu-secret <密钥>
 ```
 
 写入的 Secret：
@@ -88,9 +94,11 @@ python scripts/inject_secrets.py --repo WenQQ6/auto-signin --pushplus-token <tok
 | `WB_ACCESS_TOKEN` | 兜底用的访问令牌 |
 | `WB_REFRESH_TOKEN` | 主用：每次运行前用它换新 token |
 | `WB_USER_ID` | 请求头 `X-User-Id` |
-| `PUSHPLUS_TOKEN` | 微信推送令牌 |
+| `FEISHU_WEBHOOK` | 飞书自定义机器人 webhook 地址（含 token，本身即敏感值） |
+| `FEISHU_SECRET` | 飞书签名校验密钥；未开签名校验则不需要 |
 
 `workbuddy-desktop.info` 和任何明文 token **都不进仓库**（见 `.gitignore`）。
+飞书 webhook 地址同样按敏感值处理：它被登记进脱敏表，日志里只会看到 `<REDACTED>`。
 
 ### 2. 令牌续期（本方案的重点）
 

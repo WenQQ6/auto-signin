@@ -46,7 +46,12 @@ jobs:
           WB_ACCESS_TOKEN: ${{ secrets.WB_ACCESS_TOKEN }}
           WB_REFRESH_TOKEN: ${{ secrets.WB_REFRESH_TOKEN }}
           WB_USER_ID: ${{ secrets.WB_USER_ID }}
-          PUSHPLUS_TOKEN: ${{ secrets.PUSHPLUS_TOKEN }}
+          # 飞书自定义机器人 webhook（含 token，本身就是敏感值，必须走 Secret）
+          FEISHU_WEBHOOK: ${{ secrets.FEISHU_WEBHOOK }}
+          # 仅当机器人开启了「签名校验」时才需要；未开启留空即可
+          FEISHU_SECRET: ${{ secrets.FEISHU_SECRET }}
+          # 仅当机器人设置了「自定义关键词」时才需要；消息必须包含该词
+          FEISHU_KEYWORD: ${{ secrets.FEISHU_KEYWORD }}
         run: |
           set -euo pipefail
           "$PY" scripts/wb_daily.py

@@ -315,21 +315,26 @@ def _describe_eta(st: dict, result: dict) -> None:
 
 
 # --------------------------------------------------------------------------
-# 4. 推送（PushPlus → 微信服务号）
+# 4. 推送（飞书自定义机器人 webhook）
 # --------------------------------------------------------------------------
-def pushplus_send(title: str, content: str) -> None:
-    """PushPlus 走独立域名，单独实现。"""
-    token = os.environ.get("PUSHPLUS_TOKEN", "").strip()
-    if not token:
-        log("\n[推送] 未配置 PUSHPLUS_TOKEN，跳过推送")
-        return
-    register_secret(token)
-    payload = {"token": token, "title": title, "content": content,
-               "template": "markdown", "channel": "wechat"}
+def _feishu_sign(secret: str, timestamp: int) -> str:
+    """飞书签名：以 "timestamp\\nsecret" 为密钥，对空串做 HMAC-SHA256 再 base64。"""
+    import base64
+    import hashlib
+    import hmac
+    string_to_sign = "%s\n%s" % (timestamp, secret)
+    digest = hmac.new(string_to_sign.encode("utf-8"),
+                      digestmod=hashlib.sha256).digest()
+    return base64.b64encode(digest).decode("utf-8")
+
+
+def _feishu_post(webhook: str, payload: dict) -> tuple[int, object]:
+    """POST 到 webhook 地址；URL 本身是敏感值，错误信息里也不能带出来。"""
     req = urllib.request.Request(
-        "https://www.pushplus.plus/send",
-        data=json.dumps(payload).encode("utf-8"),
-        headers={"Content-Type": "application/json", "User-Agent": USER_AGENT},
+        webhook,
+        data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+        headers={"Content-Type": "application/json; charset=utf-8",
+                 "User-Agent": USER_AGENT},
         method="POST",
     )
     last: tuple[int, object] = (-1, {})
@@ -337,22 +342,95 @@ def pushplus_send(title: str, content: str) -> None:
         try:
             with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT,
                                         context=ssl.create_default_context()) as r:
-                last = (r.status, json.loads(r.read().decode("utf-8", "replace")))
-                break
+                body = json.loads(r.read().decode("utf-8", "replace"))
+                # 飞书无论成败都返回 HTTP 200，成败看 body.code
+                return r.status, body
         except urllib.error.HTTPError as e:
-            last = (e.code, {"raw": e.read().decode("utf-8", "replace")[:300]})
+            raw = e.read().decode("utf-8", "replace")
+            try:
+                last = (e.code, json.loads(raw))
+            except Exception:
+                last = (e.code, {"raw": raw[:300]})
             if e.code < 500:
-                break
+                return last
         except Exception as e:
-            last = (-1, {"error": "%s: %s" % (type(e).__name__, e)})
-        time.sleep(1.5 * (attempt + 1))
-    log("\n[推送] PushPlus → HTTP %s %s" % (last[0], redact(json.dumps(last[1], ensure_ascii=False)[:200])))
+            # 网络异常里可能带上完整 URL（含 token），这里统一脱敏
+            last = (-1, {"error": redact("%s: %s" % (type(e).__name__, e))})
+        if attempt < 2:
+            time.sleep(1.5 * (attempt + 1))
+    return last
+
+
+def build_card(title: str, sections: list[str], ok: bool) -> dict:
+    """飞书卡片（schema 2.0）。用 markdown 元素，比纯文本可读得多。"""
+    elements: list[dict] = []
+    for i, sec in enumerate(sections):
+        if i:
+            elements.append({"tag": "hr"})
+        elements.append({"tag": "markdown", "content": sec,
+                         "text_align": "left", "text_size": "normal_v2"})
+    return {
+        "msg_type": "interactive",
+        "card": {
+            "schema": "2.0",
+            "config": {"update_multi": True},
+            "header": {
+                "title": {"tag": "plain_text", "content": title},
+                "template": "green" if ok else "red",
+            },
+            "body": {"direction": "vertical", "padding": "12px 12px 12px 12px",
+                     "elements": elements},
+        },
+    }
+
+
+def feishu_send(title: str, sections: list[str], plain: str, ok: bool) -> None:
+    webhook = os.environ.get("FEISHU_WEBHOOK", "").strip()
+    if not webhook:
+        log("\n[推送] 未配置 FEISHU_WEBHOOK，跳过推送")
+        return
+    register_secret(webhook)                     # 带 token 的 URL 本身就是敏感值
+
+    # 机器人若开了「自定义关键词」，消息里必须出现该词，否则整条被拒
+    keyword = os.environ.get("FEISHU_KEYWORD", "").strip()
+    if keyword and keyword not in title:
+        title = "%s %s" % (keyword, title)
+
+    payload = build_card(title, sections, ok)
+
+    secret = os.environ.get("FEISHU_SECRET", "").strip()
+    if secret:
+        register_secret(secret)
+        ts = int(time.time())                    # 必须与标准时间偏差 1 小时以内
+        payload["timestamp"] = str(ts)
+        payload["sign"] = _feishu_sign(secret, ts)
+
+    code, body = _feishu_post(webhook, payload)
+    log("\n[推送] 飞书卡片 → HTTP %s %s"
+        % (code, redact(json.dumps(body, ensure_ascii=False)[:200])))
+    if isinstance(body, dict) and body.get("code") == 0:
+        return
+
+    # 卡片失败就退回纯文本再试一次：宁可格式朴素，也不能丢通知
+    log("[推送] 卡片发送未成功，回退纯文本重试")
+    fallback = {"msg_type": "text", "content": {"text": title + "\n\n" + plain}}
+    if secret:
+        ts = int(time.time())
+        fallback["timestamp"] = str(ts)
+        fallback["sign"] = _feishu_sign(secret, ts)
+    code2, body2 = _feishu_post(webhook, fallback)
+    log("[推送] 飞书纯文本 → HTTP %s %s"
+        % (code2, redact(json.dumps(body2, ensure_ascii=False)[:200])))
 
 
 # --------------------------------------------------------------------------
 # 5. 组装报告
 # --------------------------------------------------------------------------
-def build_markdown(signin: dict, cat: dict, token_src: str) -> str:
+def build_report(signin: dict, cat: dict, token_src: str) -> tuple[str, list[str], str]:
+    """返回 (标题, 卡片的分段 markdown, 纯文本兜底)。
+
+    签到与猫猫各自独立成段，飞书卡片里用分隔线隔开，一眼能分清。
+    """
     if signin["state"] == "SUCCESS":
         s_head = "✅ 签到成功"
     elif signin["state"] == "ALREADY":
@@ -371,14 +449,19 @@ def build_markdown(signin: dict, cat: dict, token_src: str) -> str:
     else:
         c_head = "⚠️ 猫猫部分异常"
 
-    lines = [
-        "## 📅 签到", s_head, "",
-        *["- " + x for x in signin["lines"]], "",
-        "## 🐱 猫猫旅行", c_head, "",
-        *["- " + x for x in cat["lines"]], "",
-        "---", "凭证来源：%s" % token_src,
-    ]
-    return "\n".join(lines)
+    stamp = time.strftime("%m-%d", time.localtime())
+    title = "WorkBuddy 日报 %s · %s" % (stamp, "签到✅" if signin["ok"] else "签到❌")
+
+    sec_signin = "\n".join(["**📅 签到**　" + s_head, ""]
+                           + ["- " + x for x in signin["lines"]])
+    sec_cat = "\n".join(["**🐱 猫猫旅行**　" + c_head, ""]
+                        + ["- " + x for x in cat["lines"]])
+    sec_foot = "_凭证来源：%s_" % token_src
+
+    sections = [sec_signin, sec_cat, sec_foot]
+    plain = "\n".join([title, "", sec_signin.replace("**", ""), "",
+                       sec_cat.replace("**", ""), "", sec_foot.strip("_")])
+    return title, sections, plain
 
 
 def dump_raw(signin: dict, cat: dict) -> str:
@@ -431,18 +514,17 @@ def main() -> int:
     raw = dump_raw(signin, cat)
     log(raw)
 
-    md = build_markdown(signin, cat, src)
-    emit_step_summary(md + "\n\n```\n" + raw.strip() + "\n```")
+    title, sections, plain = build_report(signin, cat, src)
+    emit_step_summary("\n".join(sections).replace("**", "")
+                      + "\n\n```\n" + raw.strip() + "\n```")
 
-    stamp = time.strftime("%m-%d", time.localtime())
     if cat["departed"]:
         flag = "🐱已派"
     elif cat["ok"]:
         flag = "🐱正常"
     else:
         flag = "🐱异常"
-    pushplus_send("WorkBuddy 日报 %s · %s" % (stamp, "✅签到" if signin["ok"] else "❌签到"),
-                  md)
+    feishu_send(title, sections, plain, signin["ok"])
 
     log("\n" + "=" * 72)
     if signin["ok"]:

@@ -20,8 +20,10 @@
     set GH_TOKEN=ghp_xxx           # Windows
     python inject_secrets.py --repo <用户名>/auto-signin
 
-    # 想顺手把 PushPlus token 也写进去
-    python inject_secrets.py --repo <用户名>/auto-signin --pushplus-token <你的token>
+    # 想顺手把飞书 webhook 也写进去
+    python inject_secrets.py --repo <用户名>/auto-signin \
+        --feishu-webhook https://open.feishu.cn/open-apis/bot/v2/hook/xxxx
+    # 机器人开了「签名校验」就再加 --feishu-secret <密钥>
 
 依赖：
     gh 方式无需额外依赖；REST 方式需要 pynacl（pip install pynacl）。
@@ -166,8 +168,11 @@ def inject_via_api(repo: str, secrets: dict) -> None:
 # --------------------------------------------------------------------------
 def main() -> int:
     ap = argparse.ArgumentParser(description="把本机 WorkBuddy 登录态注入 GitHub 仓库 Secrets")
-    ap.add_argument("--repo", required=True, help="owner/repo，例如 wenqiqin6/auto-signin")
-    ap.add_argument("--pushplus-token", default="", help="可选：顺便写入 PUSHPLUS_TOKEN")
+    ap.add_argument("--repo", required=True, help="owner/repo，例如 WenQQ6/auto-signin")
+    ap.add_argument("--feishu-webhook", default="",
+                    help="飞书自定义机器人 webhook 地址（含 token）")
+    ap.add_argument("--feishu-secret", default="",
+                    help="飞书签名校验的密钥；机器人没开签名校验就不用给")
     ap.add_argument("--dry-run", action="store_true", help="只打印将要写入的字段名，不实际写")
     args = ap.parse_args()
 
@@ -183,8 +188,10 @@ def main() -> int:
         "WB_REFRESH_TOKEN": creds["WB_REFRESH_TOKEN"],
         "WB_USER_ID": creds["WB_USER_ID"],
     }
-    if args.pushplus_token:
-        secrets["PUSHPLUS_TOKEN"] = args.pushplus_token
+    if args.feishu_webhook:
+        secrets["FEISHU_WEBHOOK"] = args.feishu_webhook
+    if args.feishu_secret:
+        secrets["FEISHU_SECRET"] = args.feishu_secret
     secrets = {k: v for k, v in secrets.items() if v}
 
     print("\n准备写入 %s 的 Secrets：%s" % (args.repo, ", ".join(sorted(secrets))))
