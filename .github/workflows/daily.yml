@@ -5,7 +5,7 @@ name: WorkBuddy 每日签到 + 猫猫旅行
 #   1) workflow_dispatch —— **主触发**。
 #      由外部免费定时器（cron-job.org）每天 10:10（中国标准时间）调用下面这个接口：
 #        POST https://api.github.com/repos/<owner>/<repo>/actions/workflows/daily.yml/dispatches
-#        body: {"ref":"main"}
+#        body: {"ref":"main","inputs":{"source":"cron"}}
 #      为什么不用 GitHub 自带的 schedule 做主触发：GitHub 的 schedule 是 best-effort，
 #      自 2026 年 8 月下旬起出现大面积「延迟数小时 → 然后彻底不再产生运行」的故障，
 #      仓库侧无任何报错，只在按按钮手动跑时正常。详见 README「为什么不用 GitHub 自带 cron」。
@@ -18,6 +18,13 @@ on:
     # cron 用 UTC。03:10 UTC = 11:10 中国标准时间（比主触发晚 1 小时，作兜底）
     - cron: "10 3 * * *"
   workflow_dispatch:
+    inputs:
+      source:
+        # 仅用于在日志和飞书卡片上标注「这次是自动还是手动」，不参与任何业务逻辑
+        description: "触发来源标注：外部定时器请传 cron，页面手点保持 manual"
+        required: false
+        default: "manual"
+        type: string
 
 # 同一时间只允许一个实例，避免主触发与兜底撞车导致重复调用写接口
 concurrency:
@@ -65,6 +72,8 @@ jobs:
           FEISHU_KEYWORD: ${{ secrets.FEISHU_KEYWORD }}
           # 仅用于 schedule 兜底去重：查今天的运行记录。脚本内会被登记进脱敏表
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # 触发来源标注：外部定时器传 cron，Actions 页面手点默认 manual
+          WB_TRIGGER_SOURCE: ${{ inputs.source || 'manual' }}
         run: |
           set -euo pipefail
           "$PY" scripts/wb_daily.py
