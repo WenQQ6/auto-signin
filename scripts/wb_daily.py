@@ -464,21 +464,24 @@ def _now_cst() -> str:
 def trigger_source() -> tuple[str, str]:
     """本次运行的触发来源，返回 (短标签, 详细说明)。
 
-    workflow_dispatch 有两个来源在事件层面长得完全一样，无法自动区分，
-    所以约定：外部定时器（cron-job.org）dispatch 时带 inputs.source=cron，
-    Actions 页面手点 Run workflow 则落到默认值 manual。
+    判断完全基于 GitHub 给出的事件名，不依赖任何「自报」字段——
+    workflow_dispatch 无法区分「外部定时器」和「人在页面手点」（事件名一样，
+    自报的标记谁都能写），所以定时器走独立的 daily-cron.yml，
+    由它用 workflow_call 转调正式任务。这样四种情况彻底分开：
+
+      workflow_call      → 外部定时器（daily-cron.yml 转调）
+      workflow_dispatch  → 有人手点 Run workflow
+      schedule           → GitHub 自带 cron 兜底
+      其它 / 空          → 其它事件 / 本机运行
     """
     event = os.environ.get("GITHUB_EVENT_NAME", "").strip()
-    hint = os.environ.get("WB_TRIGGER_SOURCE", "").strip().lower()
 
+    if event == "workflow_call":
+        return "外部定时器", "event=workflow_call · 经 daily-cron.yml 转调"
+    if event == "workflow_dispatch":
+        return "手动触发", "event=workflow_dispatch · 页面/API 手点"
     if event == "schedule":
         return "GitHub 自带 cron（兜底）", "event=schedule"
-    if event == "workflow_dispatch":
-        if hint == "cron":
-            return "外部定时器", "event=workflow_dispatch · inputs.source=cron"
-        if hint == "manual":
-            return "手动触发", "event=workflow_dispatch · 页面/API 手动"
-        return "手动触发（来源未标注）", "event=workflow_dispatch · inputs.source 缺失"
     if event:
         return event, "event=%s" % event
     return "本机运行", "非 GitHub Actions 环境"
