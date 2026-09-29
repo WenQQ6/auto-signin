@@ -1,0 +1,35 @@
+name: WorkBuddy 每日触发（外部定时器专用入口）
+
+# 这个文件只有一个用途：给外部定时器（cron-job.org）当**专用入口**。
+#
+# 为什么不把定时器直接指向 daily.yml
+# ---------------------------------------------------------------------------
+# cron-job.org 调的是 Actions 的 dispatches 接口，它产生的事件是
+# workflow_dispatch —— 而「人在 Actions 页面点 Run workflow」产生的**也是**
+# workflow_dispatch。两者在 GitHub 的运行记录里长得一模一样，事后无法分辨，
+# 只能靠请求体里自报一个标记（自报不可信：谁都能写）。
+#
+# 单独开一个入口文件后，四种情况在 GitHub 记录里彻底分开：
+#
+#   daily-cron.yml  event=workflow_dispatch  → 外部定时器打进来的（本文件只给定时器用）
+#   daily.yml       event=workflow_call      → 定时器经本文件转调的正式任务
+#   daily.yml       event=workflow_dispatch  → 有人在页面手点 Run workflow
+#   daily.yml       event=schedule           → GitHub 自带 cron 兜底跑起来了
+#
+# 定时器怎么配（cron-job.org）：
+#   POST https://api.github.com/repos/<owner>/<repo>/actions/workflows/daily-cron.yml/dispatches
+#   body: {"ref":"main"}
+#   —— 注意路径是 daily-cron.yml，不是 daily.yml，也不需要 inputs。
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  # 供被调用的 daily.yml 做「今日是否已跑过」去重查询
+  actions: read
+
+jobs:
+  daily:
+    # 直接复用正式任务定义，逻辑只有一份，不会走偏
+    uses: ./.github/workflows/daily.yml
+    secrets: inherit
