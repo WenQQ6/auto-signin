@@ -143,6 +143,7 @@ python scripts/inject_secrets.py --repo WenQQ6/auto-signin \
 ```
 cron-job.org 外部定时器（每天 10:10 CST）
       │  POST /repos/WenQQ6/auto-signin/actions/workflows/daily.yml/dispatches
+      │  body: {"ref":"main","inputs":{"source":"cron"}}
       ▼
 workflow_dispatch  ← 主触发
       │  签到 + 猫猫旅行 → 推飞书
@@ -154,6 +155,28 @@ workflow_dispatch  ← 主触发
 |---|---|---|
 | `workflow_dispatch`（外部定时器调） | 10:10 CST | **主触发** |
 | `schedule`（GitHub 自带 cron） | 11:10 CST | 兜底；跑起来时用「今日已成功运行」去重，不重复推送 |
+
+### 触发来源标注
+
+`workflow_dispatch` 无论来自外部定时器还是页面手点，**事件名完全一样**，光看 GitHub
+的运行记录分辨不出来。因此加了 `source` 入参：外部定时器传 `cron`，页面手点默认 `manual`。
+
+日志头部与飞书卡片底部都会写明，例如：
+
+```
+触发来源：外部定时器（event=workflow_dispatch · inputs.source=cron）
+运行编号：#36515579690　触发者：WenQQ6
+开始时间：2026-09-29 11:05:19（中国标准时间）
+```
+
+| 卡片/日志显示 | 含义 |
+|---|---|
+| `触发：外部定时器` | cron-job.org 自动触发 |
+| `触发：手动触发` | 有人在 Actions 页面点了 Run workflow |
+| `触发：手动触发（来源未标注）` | API 手调但没带 `inputs.source` |
+| `触发：GitHub 自带 cron（兜底）` | GitHub 自己的定时器触发了（故障已恢复） |
+
+> 该标注纯粹用于事后追溯，不参与任何业务判断。
 
 ### 为什么不用 GitHub 自带 cron 做主触发
 
