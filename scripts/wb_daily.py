@@ -449,9 +449,46 @@ def feishu_send(title: str, sections: list[str], plain: str, ok: bool) -> None:
 
 
 # --------------------------------------------------------------------------
+# 4.5 触发来源与时间（便于事后分辨「自动跑」还是「手动跑」）
+# --------------------------------------------------------------------------
+def _now_cst() -> str:
+    """当前中国标准时间。
+
+    注意：GitHub runner 的时区是 UTC，直接用 time.localtime() 会在
+    北京时间 00:00~08:00 之间得出**前一天**的日期，所以统一显式加 8 小时。
+    """
+    return (datetime.datetime.now(datetime.timezone.utc)
+            + datetime.timedelta(hours=8)).strftime("%Y-%m-%d %H:%M:%S")
+
+
+def trigger_source() -> tuple[str, str]:
+    """本次运行的触发来源，返回 (短标签, 详细说明)。
+
+    workflow_dispatch 有两个来源在事件层面长得完全一样，无法自动区分，
+    所以约定：外部定时器（cron-job.org）dispatch 时带 inputs.source=cron，
+    Actions 页面手点 Run workflow 则落到默认值 manual。
+    """
+    event = os.environ.get("GITHUB_EVENT_NAME", "").strip()
+    hint = os.environ.get("WB_TRIGGER_SOURCE", "").strip().lower()
+
+    if event == "schedule":
+        return "GitHub 自带 cron（兜底）", "event=schedule"
+    if event == "workflow_dispatch":
+        if hint == "cron":
+            return "外部定时器", "event=workflow_dispatch · inputs.source=cron"
+        if hint == "manual":
+            return "手动触发", "event=workflow_dispatch · 页面/API 手动"
+        return "手动触发（来源未标注）", "event=workflow_dispatch · inputs.source 缺失"
+    if event:
+        return event, "event=%s" % event
+    return "本机运行", "非 GitHub Actions 环境"
+
+
+# --------------------------------------------------------------------------
 # 5. 组装报告
 # --------------------------------------------------------------------------
-def build_report(signin: dict, cat: dict, token_src: str) -> tuple[str, list[str], str]:
+def build_report(signin: dict, cat: dict, token_src: str,
+                 trigger_label: str = "") -> tuple[str, list[str], str]:
     """返回 (标题, 卡片的分段 markdown, 纯文本兜底)。
 
     签到与猫猫各自独立成段，飞书卡片里用分隔线隔开，一眼能分清。
@@ -474,14 +511,16 @@ def build_report(signin: dict, cat: dict, token_src: str) -> tuple[str, list[str
     else:
         c_head = "⚠️ 猫猫部分异常"
 
-    stamp = time.strftime("%m-%d", time.localtime())
+    now = _now_cst()                            # 中国标准时间，不要用 runner 的 localtime（UTC）
+    stamp = now[5:10]                           # MM-DD
     title = "WorkBuddy 日报 %s · %s" % (stamp, "签到✅" if signin["ok"] else "签到❌")
 
     sec_signin = "\n".join(["**📅 签到**　" + s_head, ""]
                            + ["- " + x for x in signin["lines"]])
     sec_cat = "\n".join(["**🐱 猫猫旅行**　" + c_head, ""]
                         + ["- " + x for x in cat["lines"]])
-    sec_foot = "_凭证来源：%s_" % token_src
+    sec_foot = "_%s CST · 触发：%s · 凭证：%s_" % (
+        now[11:16], trigger_label or "未知", token_src)
 
     sections = [sec_signin, sec_cat, sec_foot]
     plain = "\n".join([title, "", sec_signin.replace("**", ""), "",
@@ -570,9 +609,17 @@ def already_succeeded_today() -> bool:
 
 
 def main() -> int:
+    src_label, src_detail = trigger_source()
+    run_id = os.environ.get("GITHUB_RUN_ID", "").strip()
+    actor = os.environ.get("GITHUB_ACTOR", "").strip()
+
     log("=" * 72)
     log("WorkBuddy 每日任务开始（签到 + 猫猫旅行）")
     log("=" * 72)
+    log("触发来源：%s（%s）" % (src_label, src_detail))
+    if run_id:
+        log("运行编号：#%s%s" % (run_id, "　触发者：%s" % actor if actor else ""))
+    log("开始时间：%s（中国标准时间）" % _now_cst())
 
     # 兜底去重：schedule（GitHub 自带 cron）如果发现今天已经有成功运行，安静退出。
     # 主触发是外部定时器 → workflow_dispatch，所以正常情况下走不到这里。
@@ -605,7 +652,7 @@ def main() -> int:
     raw = dump_raw(signin, cat)
     log(raw)
 
-    title, sections, plain = build_report(signin, cat, src)
+    title, sections, plain = build_report(signin, cat, src, src_label)
     emit_step_summary("\n".join(sections).replace("**", "")
                       + "\n\n```\n" + raw.strip() + "\n```")
 
