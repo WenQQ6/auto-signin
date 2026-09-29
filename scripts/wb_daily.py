@@ -301,7 +301,7 @@ def do_cat(token: str) -> dict:
         if dcode == 200:
             dd = unwrap(dbody)
             name = (dd.get("location") or {}).get("name") or target.get("name", "?")
-            dur = dd.get("duration_hours") or target.get("duration_hours", "?")
+            dur = _pick_depart_duration(dd, target)
             result["ok"] = True
             result["departed"] = True
             result["lines"].append("已派猫猫前往「%s」（%s 小时后回家）" % (name, dur))
@@ -314,6 +314,21 @@ def do_cat(token: str) -> dict:
         result["ok"] = False
         result["lines"].append("猫猫模块异常：%s: %s" % (type(e).__name__, e))
         return result
+
+
+def _pick_depart_duration(dd: dict, target: dict) -> str:
+    """取本次旅行的时长（小时）。
+
+    坑：depart 响应顶层的 duration_hours 实测恒为 0（假值），
+    真正的时长在响应里的 location.duration_hours；而 config 里的目的地对象
+    又没有 duration_hours 字段。所以按优先级找第一个「有效且非 0」的值。
+    """
+    for cand in ((dd.get("location") or {}).get("duration_hours"),
+                 dd.get("duration_hours"),
+                 target.get("duration_hours")):
+        if isinstance(cand, (int, float)) and cand:
+            return str(int(cand))
+    return "?"
 
 
 def _describe_eta(st: dict, result: dict) -> None:
