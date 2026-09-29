@@ -146,53 +146,59 @@ cron-job.org 外部定时器（每天 10:10 CST）
       │  body: {"ref":"main"}
       ▼
 daily-cron.yml                     ← 定时器专用入口（只有它会被定时器打到）
-      │  workflow_call
+      │  workflow_call  with: entry=cron
       ▼
-daily.yml    event=workflow_call   ← 正式任务：签到 + 猫猫旅行 → 推飞书
+daily.yml (entry=cron)             ← 正式任务：签到 + 猫猫旅行 → 推飞书
       ▲
       ├─ daily.yml  event=workflow_dispatch ← 手动补跑（Actions 页点 Run workflow）
       └─ daily.yml  event=schedule          ← 兜底（GitHub 自带 cron，11:10 CST）
 ```
 
-| 触发 | 事件名 | 时间 | 角色 |
+| 触发 | 判定依据 | 时间 | 角色 |
 |---|---|---|---|
-| `daily-cron.yml` | `workflow_dispatch` | 10:10 CST | 定时器专用入口，只给 cron-job.org 用 |
-| `daily.yml` | `workflow_call` | 10:10 CST | **正式任务**（由上面转调） |
-| `daily.yml` | `workflow_dispatch` | 任意 | 手动补跑，随时可用，不去重 |
-| `daily.yml` | `schedule` | 11:10 CST | 兜底；跑起来时用「今日已成功运行」去重 |
+| `daily-cron.yml` | — | 10:10 CST | 定时器专用入口，只给 cron-job.org 用 |
+| `daily.yml` | `entry=cron` | 10:10 CST | **正式任务**（由上面转调） |
+| `daily.yml` | `event=workflow_dispatch` | 任意 | 手动补跑，随时可用，不去重 |
+| `daily.yml` | `event=schedule` | 11:10 CST | 兜底；跑起来时用「今日已成功运行」去重 |
 
 ### 为什么要把定时器单独开一个入口文件
 
 `workflow_dispatch` 有个坑：**外部定时器调 dispatches 接口产生的事件，和人在页面
 点 Run workflow 产生的事件，事件名完全一样**，在 GitHub 的运行记录里无法分辨。
 
-一开始的做法是让定时器在请求体里自报一个 `inputs.source=cron` 标记。这不可靠——
-**标记是自我声明的，谁都能写**。实际就出过一次问题：验证功能时手动 dispatch 顺手
-带了 `source=cron`，结果飞书卡片上显示成「外部定时器」，看起来像自动跑的。
+试过两个都不行的方案：
 
-现在改成用**事件名**区分，不需要任何自报：定时器指向 `daily-cron.yml`（这个文件
-平时没人会去点），由它用 `workflow_call` 转调 `daily.yml`。于是
-`event=workflow_call` 就是「外部定时器」的充要条件。
+| 方案 | 为什么不行 |
+|---|---|
+| 定时器在请求体里自报 `inputs.source=cron` | 标记是**自我声明**，谁都能写。实际就出过一次误标：验证功能时手动 dispatch 顺手带了 `source=cron`，飞书卡片上就显示成「外部定时器」，看起来像自动跑的 |
+| 靠 `event=workflow_call` 区分 | 实测**不成立**：reusable workflow 里的 `github.event_name` **继承 caller 的事件名**，仍然是 `workflow_dispatch`，不是 `workflow_call` |
+
+最终方案：`daily-cron.yml` 在 **workflow 层**写死 `with: {entry: cron}` 传给被调用的
+`daily.yml`。这个标记写在**仓库文件**里，不是请求体里——想伪造必须拥有仓库写权限，
+而定时器用的令牌只需要 Actions 权限，改不了文件。**所以它是可信的。**
+
+> ⚠️ 补跑请点 `daily.yml` 的 **Run workflow**，不要点 `daily-cron.yml` 的
+> （后者是定时器专用入口，手点它会被标记成「外部定时器」）。
 
 ### 触发来源标注
 
 日志头部与飞书卡片底部都会写明，例如：
 
 ```
-触发来源：外部定时器（event=workflow_call · 经 daily-cron.yml 转调）
-运行编号：#36518549625　触发者：WenQQ6
-开始时间：2026-09-29 11:45:25（中国标准时间）
+触发来源：外部定时器（经 daily-cron.yml 转调（workflow 入参 entry=cron））
+运行编号：#36545361129　触发者：WenQQ6
+开始时间：2026-09-29 16:51:24（中国标准时间）
 ```
 
 | 卡片/日志显示 | 依据 | 含义 |
 |---|---|---|
-| `触发：外部定时器` | `event=workflow_call` | cron-job.org 自动触发 |
+| `触发：外部定时器` | `entry=cron` | cron-job.org 自动触发（经 daily-cron.yml 转调） |
 | `触发：手动触发` | `event=workflow_dispatch` | 有人在 Actions 页面点了 Run workflow |
 | `触发：GitHub 自带 cron（兜底）` | `event=schedule` | GitHub 自己的定时器触发了（故障已恢复） |
 | `触发：本机运行` | 无 event 环境变量 | 在电脑上直接跑脚本 |
 
-> 依据完全来自 GitHub 给的事件名，不依赖任何自报字段，因此可信。
-> 该标注纯粹用于事后追溯，不参与任何业务判断。
+> 依据是**写死在仓库 workflow 文件里的入口标记**，不是请求体里的自报字段，
+> 伪造需要仓库写权限，因此可信。该标注纯粹用于事后追溯，不参与任何业务判断。
 
 ### 为什么不用 GitHub 自带 cron 做主触发
 
