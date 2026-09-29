@@ -464,24 +464,31 @@ def _now_cst() -> str:
 def trigger_source() -> tuple[str, str]:
     """本次运行的触发来源，返回 (短标签, 详细说明)。
 
-    判断完全基于 GitHub 给出的事件名，不依赖任何「自报」字段——
-    workflow_dispatch 无法区分「外部定时器」和「人在页面手点」（事件名一样，
-    自报的标记谁都能写），所以定时器走独立的 daily-cron.yml，
-    由它用 workflow_call 转调正式任务。这样四种情况彻底分开：
+    判断依据（全部来自仓库里写死的 workflow 定义，不读请求体里的任何自报字段）：
 
-      workflow_call      → 外部定时器（daily-cron.yml 转调）
-      workflow_dispatch  → 有人手点 Run workflow
-      schedule           → GitHub 自带 cron 兜底
-      其它 / 空          → 其它事件 / 本机运行
+      entry=cron               → 外部定时器（daily-cron.yml 转调时写死的入参）
+      event=schedule           → GitHub 自带 cron 兜底
+      event=workflow_dispatch  → 有人手点 Run workflow
+      其它 / 空                → 其它事件 / 本机运行
+
+    为什么最后要靠 entry 这个入参：实测发现 reusable workflow 里的
+    github.event_name 继承的是 **caller 的事件名**（也就是 workflow_dispatch），
+    而不是 workflow_call，所以光看事件名区分不了。
+
+    entry 为什么可信：它不是从请求体传进来的，而是写死在仓库的
+    daily-cron.yml 里（jobs.<id>.with.entry=cron）。想伪造它必须能改仓库文件，
+    而定时器用的令牌只有 Actions 权限、改不了文件。相比之下，早先让定时器在
+    请求体里自报 inputs.source 的做法任何人都能伪造（实际就出过一次误标），已废弃。
     """
     event = os.environ.get("GITHUB_EVENT_NAME", "").strip()
+    entry = os.environ.get("WB_ENTRY", "").strip().lower()
 
-    if event == "workflow_call":
-        return "外部定时器", "event=workflow_call · 经 daily-cron.yml 转调"
-    if event == "workflow_dispatch":
-        return "手动触发", "event=workflow_dispatch · 页面/API 手点"
+    if entry == "cron":
+        return "外部定时器", "经 daily-cron.yml 转调（workflow 入参 entry=cron）"
     if event == "schedule":
         return "GitHub 自带 cron（兜底）", "event=schedule"
+    if event == "workflow_dispatch":
+        return "手动触发", "event=workflow_dispatch · 页面/API 手点"
     if event:
         return event, "event=%s" % event
     return "本机运行", "非 GitHub Actions 环境"
