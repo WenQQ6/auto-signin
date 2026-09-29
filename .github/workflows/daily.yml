@@ -24,6 +24,16 @@ on:
     - cron: "10 3 * * *"
   workflow_dispatch:
   workflow_call:
+    inputs:
+      entry:
+        # 由 daily-cron.yml 写死传入 cron，用来标记「本次是外部定时器拉起的」。
+        # 注意：实测 reusable workflow 里的 github.event_name 继承 caller 的事件名，
+        # 仍然是 workflow_dispatch，所以无法只靠事件名区分，必须靠这个入参。
+        # 它写在仓库文件里（不是请求体），伪造需要仓库写权限，因此可信。
+        description: "入口标记：daily-cron.yml 传 cron，其它情况留空"
+        required: false
+        default: ""
+        type: string
 
 # 同一时间只允许一个实例，避免定时器与兜底撞车导致重复调用写接口
 concurrency:
@@ -71,6 +81,8 @@ jobs:
           FEISHU_KEYWORD: ${{ secrets.FEISHU_KEYWORD }}
           # 仅用于 schedule 兜底去重：查今天的运行记录。脚本内会被登记进脱敏表
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # 入口标记：只有经 daily-cron.yml 转调时才是 cron，用于区分自动/手动
+          WB_ENTRY: ${{ inputs.entry }}
         run: |
           set -euo pipefail
           "$PY" scripts/wb_daily.py
