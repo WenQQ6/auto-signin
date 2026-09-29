@@ -6,15 +6,24 @@ name: WorkBuddy 每日触发（外部定时器专用入口）
 # ---------------------------------------------------------------------------
 # cron-job.org 调的是 Actions 的 dispatches 接口，它产生的事件是
 # workflow_dispatch —— 而「人在 Actions 页面点 Run workflow」产生的**也是**
-# workflow_dispatch。两者在 GitHub 的运行记录里长得一模一样，事后无法分辨，
-# 只能靠请求体里自报一个标记（自报不可信：谁都能写）。
+# workflow_dispatch。两者在 GitHub 的运行记录里长得一模一样，事后无法分辨。
 #
-# 单独开一个入口文件后，四种情况在 GitHub 记录里彻底分开：
+# 一开始试过让定时器在请求体里自报一个 inputs.source=cron 标记：不可靠，
+# 谁都能写（实际出过一次误标，手动触发却被显示成「外部定时器」）。
 #
-#   daily-cron.yml  event=workflow_dispatch  → 外部定时器打进来的（本文件只给定时器用）
-#   daily.yml       event=workflow_call      → 定时器经本文件转调的正式任务
-#   daily.yml       event=workflow_dispatch  → 有人在页面手点 Run workflow
-#   daily.yml       event=schedule           → GitHub 自带 cron 兜底跑起来了
+# 也试过靠事件名 workflow_call 区分：实测**不可行** —— reusable workflow 里的
+# github.event_name 继承的是 caller 的事件名，仍然是 workflow_dispatch。
+#
+# 最终做法：本文件在 workflow 层写死 `with: entry: cron` 传给被调用的 daily.yml。
+# 这个标记写在**仓库文件**里，不是请求体里，想伪造必须拥有仓库写权限；
+# 而定时器用的令牌只需要 Actions 权限，改不了文件 —— 所以它是可信的。
+#
+# 于是四种情况可以清楚分开：
+#
+#   daily-cron.yml  → 外部定时器打进来的入口（请勿手动点它，补跑请点 daily.yml）
+#   entry=cron      → 等价于「本次是外部定时器拉起的」
+#   event=workflow_dispatch（且无 entry）→ 有人在页面手点 Run workflow
+#   event=schedule  → GitHub 自带 cron 兜底跑起来了
 #
 # 定时器怎么配（cron-job.org）：
 #   POST https://api.github.com/repos/<owner>/<repo>/actions/workflows/daily-cron.yml/dispatches
@@ -32,4 +41,10 @@ jobs:
   daily:
     # 直接复用正式任务定义，逻辑只有一份，不会走偏
     uses: ./.github/workflows/daily.yml
+    # entry=cron 是区分「自动/手动」的唯一依据。
+    # 实测：reusable workflow 里的 github.event_name 继承 caller 的事件名
+    # （仍是 workflow_dispatch），所以必须显式传这个入口标记。
+    # 它写在仓库文件里而非请求体，定时器的令牌无仓库写权限，因此无法伪造。
+    with:
+      entry: cron
     secrets: inherit
