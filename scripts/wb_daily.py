@@ -18,10 +18,20 @@
 退出码：
   0  签到成功（含"今日已签到"）—— 无论猫猫是否成功
   1  签到失败（认证/网络/服务端错误）
+
+触发架构（重要）
+----------------
+主触发 = 外部免费定时器（cron-job.org）每天 10:10 CST 调 workflow_dispatch。
+兜底   = GitHub 自带 schedule（11:10 CST）。
+原因   = GitHub 的 schedule 是 best-effort，2026 年 8 月下旬起大面积出现
+         「延迟数小时 → 彻底不再产生运行」，详见 README。
+去重   = 兜底跑起来时用 already_succeeded_today() 判断今天是否已由主触发完成，
+         是则安静退出，避免同一天推两张卡片。
 """
 
 from __future__ import annotations
 
+import datetime
 import json
 import os
 import re
@@ -485,10 +495,76 @@ def emit_step_summary(text: str) -> None:
             log("写 step summary 失败：%s" % e)
 
 
+# --------------------------------------------------------------------------
+# 兜底触发去重（只对 schedule 事件生效）
+# --------------------------------------------------------------------------
+def _cst_day_start_utc() -> str:
+    """「中国标准时间今天 00:00」对应的 UTC 时刻（ISO8601，带 Z）。"""
+    now = datetime.datetime.now(datetime.timezone.utc)
+    cst = now + datetime.timedelta(hours=8)
+    midnight = cst.replace(hour=0, minute=0, second=0, microsecond=0)
+    return (midnight - datetime.timedelta(hours=8)).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def already_succeeded_today() -> bool:
+    """今天（CST）是否已经有过一次成功的运行。
+
+    为什么需要它
+    ------------
+    GitHub 的 schedule 事件是 best-effort：长期存在延迟、甚至被静默丢弃的情况，
+    所以另外配了一个外部定时器走 workflow_dispatch 作**主触发**。
+    GitHub 自带的 schedule 保留作兜底；兜底真跑起来时，用本函数判断
+    「今天的活是不是已经被主触发干完了」，避免同一天推两张卡片。
+
+    只在 schedule 事件下调用。手动补跑（workflow_dispatch）不去重，
+    这样随时点 Run workflow 都能拿到一份完整报告。
+
+    本机运行时没有 GITHUB_TOKEN / GITHUB_REPOSITORY，直接返回 False。
+    """
+    token = os.environ.get("GITHUB_TOKEN", "").strip()
+    repo = os.environ.get("GITHUB_REPOSITORY", "").strip()
+    me = os.environ.get("GITHUB_RUN_ID", "").strip()
+    if not token or not repo:
+        return False
+    register_secret(token)
+
+    url = ("https://api.github.com/repos/%s/actions/runs?created=%s..&per_page=50"
+           % (repo, _cst_day_start_utc()))
+    try:
+        req = urllib.request.Request(url, headers={
+            "Authorization": "Bearer " + token,
+            "Accept": "application/vnd.github+json",
+            "User-Agent": USER_AGENT,
+        })
+        with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT,
+                                    context=ssl.create_default_context()) as r:
+            data = json.loads(r.read().decode("utf-8", "replace"))
+    except Exception as e:
+        log("[去重] 查询今日运行记录失败（按「未重复」处理，照常执行）：%s: %s"
+            % (type(e).__name__, e))
+        return False
+
+    for run in data.get("workflow_runs", []):
+        if str(run.get("id")) == me:
+            continue
+        if run.get("status") == "completed" and run.get("conclusion") == "success":
+            log("[去重] 今日已有成功运行 #%s（event=%s，%s），本次兜底触发跳过，不重复推送。"
+                % (run.get("id"), run.get("event"), run.get("created_at")))
+            return True
+    return False
+
+
 def main() -> int:
     log("=" * 72)
     log("WorkBuddy 每日任务开始（签到 + 猫猫旅行）")
     log("=" * 72)
+
+    # 兜底去重：schedule（GitHub 自带 cron）如果发现今天已经有成功运行，安静退出。
+    # 主触发是外部定时器 → workflow_dispatch，所以正常情况下走不到这里。
+    if os.environ.get("GITHUB_EVENT_NAME") == "schedule" and already_succeeded_today():
+        log("今天的任务已由主触发完成，本次兜底运行不再重复执行与推送。")
+        log("=" * 72)
+        return 0
 
     token, src = resolve_token()
     log("[凭证] %s" % src)
