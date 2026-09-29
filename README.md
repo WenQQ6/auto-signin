@@ -136,21 +136,49 @@ python scripts/inject_secrets.py --repo WenQQ6/auto-signin \
 
 ## 定时
 
-```yaml
-on:
-  schedule:
-    - cron: "10 2 * * *"   # 02:10 UTC = 10:10 中国标准时间
+**每天 10:10（中国标准时间）自动跑一次，本机不需要开机。**
+
+### 触发架构（两条并存，互为保险）
+
+```
+cron-job.org 外部定时器（每天 10:10 CST）
+      │  POST /repos/WenQQ6/auto-signin/actions/workflows/daily.yml/dispatches
+      ▼
+workflow_dispatch  ← 主触发
+      │  签到 + 猫猫旅行 → 推飞书
+      ▲
+      └─ schedule 11:10 CST ← 兜底（GitHub 自带 cron）
 ```
 
-**每天 10:10（中国标准时间）在 GitHub 云端 runner 上自动跑一次，本机不需要开机。**
+| 触发 | 时间 | 角色 |
+|---|---|---|
+| `workflow_dispatch`（外部定时器调） | 10:10 CST | **主触发** |
+| `schedule`（GitHub 自带 cron） | 11:10 CST | 兜底；跑起来时用「今日已成功运行」去重，不重复推送 |
 
-几点须知：
+### 为什么不用 GitHub 自带 cron 做主触发
+
+GitHub 的 `schedule` 事件是 **best-effort**。从 **2026 年 8 月下旬**开始出现一次持续性的
+调度器故障：定时运行先变成长时间迟到（数小时），**然后彻底不再产生任何运行记录**，
+而仓库侧没有任何报错、没有失败 job，只有手动 `workflow_dispatch` 一切正常。
+
+本仓库实测：从未产生过任何一条 `event=schedule` 的运行；另建公开/私有两个探针仓库
+（cron `*/5 * * * *`）同样 0 次，`disable→enable` + 改 cron 重新注册也无效。
+
+> 注意：网上流传的「免费账号私有仓库不能用 schedule」是**假说**——官方文档没有此限制，
+> 而且我们的**公开**探针同样不触发，已排除。
+
+### 兜底去重
+
+`daily.yml` 里的 schedule 若哪天恢复，脚本会先调 GitHub API 查
+「今天（CST）是否已有成功运行」。有则打印一行日志后退出，**不会重复推送飞书卡片**。
+手动补跑（workflow_dispatch）不做去重，随时点 Run workflow 都能拿到完整报告。
+
+### 几点须知
 
 | 事项 | 说明 |
 |---|---|
-| cron 时区 | GitHub Actions 的 cron **固定走 UTC**。`10 2` = 中国时间 `10:10`。改时间时记得换算（减去 8 小时） |
-| 延迟 | 高负载时可延迟 5～30 分钟，无 SLA。已刻意把分钟设在 `10` 而非 `0`，避开整点拥堵 |
-| 触发分支 | schedule 只在**默认分支**（`main`）上生效 |
+| cron 时区 | GitHub 的 cron **固定走 UTC**。改时间记得减 8 小时 |
+| 触发分支 | schedule 只在**默认分支**（`main`）生效 |
 | 额度 | 私有仓库每月 2000 分钟免费额度，单次约 15～20 秒，一天一跑绰绰有余 |
 | 手动补跑 | 仓库 Actions 页 → 选 workflow → **Run workflow** |
 
@@ -164,14 +192,14 @@ GitHub 官方文档写的是**公开仓库**才会因 60 天无活动被自动�
 因此加了 `keepalive.yml`，**每月 1 日**自动产生一次空提交，保证仓库始终有活动。
 
 > `keepalive.yml` 不读取任何 Secret，权限只有 `contents: write`；
-> 持有凭证的 `daily.yml` 保持 `contents: read`。两者彻底隔离。
+> 持有凭证的 `daily.yml` 是 `contents: read` + `actions: read`。两者彻底隔离。
 
 ---
 
 ## 文件
 
 ```
-.github/workflows/daily.yml       定时任务定义（cron + 手动触发）
+.github/workflows/daily.yml       定时任务定义（schedule 兜底 + workflow_dispatch 主触发）
 .github/workflows/keepalive.yml   每月保活提交，防止定时任务被静默停用
 scripts/wb_daily.py               云端主脚本：签到 + 猫猫 + 推送
 scripts/inject_secrets.py         本机运行：读登录态 → 注入仓库 Secret
